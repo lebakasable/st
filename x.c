@@ -35,6 +35,7 @@ typedef struct {
   void (*func)(const Arg *);
   const Arg arg;
   uint release;
+  int altscrn; /* 0: don't care, -1: not alt screen, 1: alt screen */
 } MouseShortcut;
 
 typedef struct {
@@ -60,6 +61,8 @@ static void zoom(const Arg *);
 static void zoomabs(const Arg *);
 static void zoomreset(const Arg *);
 static void ttysend(const Arg *);
+void kscrollup(const Arg *);
+void kscrolldown(const Arg *);
 
 /* config.h for applying patches and the configuration. */
 #include "config.h"
@@ -424,6 +427,7 @@ int mouseaction(XEvent *e, uint release) {
 
   for (ms = mshortcuts; ms < mshortcuts + LEN(mshortcuts); ms++) {
     if (ms->release == release && ms->button == e->xbutton.button &&
+        (!ms->altscrn || (ms->altscrn == (tisaltscr() ? 1 : -1))) &&
         (match(ms->mod, state) || /* exact or forced */
          match(ms->mod, state & ~forcemousemod))) {
       ms->func(&(ms->arg));
@@ -745,7 +749,7 @@ void xloadcols(void) {
 }
 
 int xgetcolor(int x, unsigned char *r, unsigned char *g, unsigned char *b) {
-  if (!BETWEEN(x, 0, dc.collen - 1))
+  if (!BETWEEN(x, 0, dc.collen))
     return 1;
 
   *r = dc.col[x].color.red >> 8;
@@ -758,7 +762,7 @@ int xgetcolor(int x, unsigned char *r, unsigned char *g, unsigned char *b) {
 int xsetcolorname(int x, const char *name) {
   Color ncolor;
 
-  if (!BETWEEN(x, 0, dc.collen - 1))
+  if (!BETWEEN(x, 0, dc.collen))
     return 1;
 
   if (!xloadcolor(x, name, &ncolor))
@@ -1459,7 +1463,7 @@ void xdrawcursor(int cx, int cy, Glyph g, int ox, int oy, Glyph og, Line line,
   /* remove the old cursor */
   if (selected(ox, oy))
     og.mode ^= ATTR_REVERSE;
-  xdrawline(line, 0, oy, len);
+  xdrawglyph(og, ox, oy);
 
   if (IS_SET(MODE_HIDE))
     return;
@@ -1483,12 +1487,16 @@ void xdrawcursor(int cx, int cy, Glyph g, int ox, int oy, Glyph og, Line line,
     if (selected(cx, cy)) {
       g.fg = defaultfg;
       g.bg = defaultrcs;
-    } else if (!(og.mode & ATTR_REVERSE)) {
-      unsigned long col = g.bg;
+    } else {
+      /** this is the main part of the dynamic cursor color patch */
       g.bg = g.fg;
-      g.fg = col;
+      g.fg = defaultbg;
     }
 
+    /**
+     * and this is the second part of the dynamic cursor color patch.
+     * it handles the `drawcol` variable
+     */
     if (IS_TRUECOL(g.bg)) {
       colbg.alpha = 0xffff;
       colbg.red = TRUERED(g.bg);
@@ -1722,7 +1730,7 @@ char *kmap(KeySym k, uint state) {
 
 void kpress(XEvent *ev) {
   XKeyEvent *e = &ev->xkey;
-  KeySym ksym = NoSymbol;
+  KeySym ksym;
   char buf[64], *customkey;
   int len;
   Rune c;
@@ -1738,13 +1746,10 @@ void kpress(XEvent *ev) {
   if (IS_SET(MODE_KBDLOCK))
     return;
 
-  if (xw.ime.xic) {
+  if (xw.ime.xic)
     len = XmbLookupString(xw.ime.xic, e, buf, sizeof buf, &ksym, &status);
-    if (status == XBufferOverflow)
-      return;
-  } else {
+  else
     len = XLookupString(e, buf, sizeof buf, &ksym, NULL);
-  }
   /* 1. shortcuts */
   for (bp = shortcuts; bp < shortcuts + LEN(shortcuts); bp++) {
     if (ksym == bp->keysym && match(bp->mod, e->state)) {
